@@ -11,6 +11,10 @@ use serde::{
 #[serde(default)]
 pub struct Config {
     pub default_language: String,
+    /// Bias generated tests toward words containing letters you often miss
+    pub adaptive: bool,
+    /// How strongly to bias (0 = off, 1 = mild, 4 = default, 10+ = very aggressive)
+    pub adaptive_strength: f64,
     pub theme: Theme,
 }
 
@@ -18,6 +22,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_language: "english200".into(),
+            adaptive: true,
+            adaptive_strength: 4.0,
             theme: Theme::default(),
         }
     }

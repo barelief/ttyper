@@ -1,8 +1,10 @@
 mod config;
+mod stats;
 mod test;
 mod ui;
 
 use config::Config;
+use stats::Stats;
 use test::{results::Results, Test};
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -74,6 +76,18 @@ struct Opt {
     #[arg(long)]
     no_backspace: bool,
 
+    /// Don't bias the test toward letters you often mistype
+    #[arg(long)]
+    no_adaptive: bool,
+
+    /// How strongly to favour words with your weak letters (overrides config)
+    #[arg(long, value_name = "N")]
+    adaptive_strength: Option<f64>,
+
+    /// Don't read or update the mistake history for this run
+    #[arg(long)]
+    no_stats: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -85,10 +99,16 @@ enum Command {
         /// Shell to generate completions for
         shell: Shell,
     },
+    /// Show your all-time per-letter accuracy
+    Stats {
+        /// Forget all recorded mistakes
+        #[arg(long)]
+        reset: bool,
+    },
 }
 
 impl Opt {
-    fn gen_contents(&self) -> Option<Vec<String>> {
+    fn gen_contents(&self, stats: &Stats) -> Option<Vec<String>> {
         match &self.contents {
             Some(path) => {
                 let lines: Vec<String> = if path.as_os_str() == "-" {
@@ -124,24 +144,44 @@ impl Opt {
                             .map(|f| f.data.into_owned())
                     })?;
 
-                let mut rng = thread_rng();
-
-                let mut language: Vec<&str> = str::from_utf8(&bytes)
+                let language: Vec<&str> = str::from_utf8(&bytes)
                     .expect("Language file had non-utf8 encoding.")
                     .lines()
                     .collect();
-                language.shuffle(&mut rng);
 
-                let mut contents: Vec<_> = language
-                    .into_iter()
-                    .cycle()
-                    .take(self.words.get())
-                    .map(ToOwned::to_owned)
-                    .collect();
-                contents.shuffle(&mut rng);
-
-                Some(contents)
+                Some(pick_words(
+                    &language,
+                    self.words.get(),
+                    stats,
+                    self.adaptive_strength(),
+                ))
             }
+        }
+    }
+
+    /// Effective adaptive strength after CLI overrides (0 disables biasing)
+    fn adaptive_strength(&self) -> f64 {
+        if self.no_adaptive {
+            return 0.0;
+        }
+        let config = self.config();
+        match self.adaptive_strength {
+            Some(s) => s,
+            None if config.adaptive => config.adaptive_strength,
+            None => 0.0,
+        }
+    }
+
+    /// Where per-letter mistake history is stored
+    fn stats_path(&self) -> PathBuf {
+        self.config_dir().join("stats.toml")
+    }
+
+    fn load_stats(&self) -> Stats {
+        if self.no_stats {
+            Stats::default()
+        } else {
+            Stats::load(&self.stats_path())
         }
     }
 
@@ -189,6 +229,72 @@ impl Opt {
     fn language_dir(&self) -> PathBuf {
         self.config_dir().join("language")
     }
+}
+
+/// Choose `count` words from `language`, favouring words that contain letters
+/// the user often misses. Words are drawn without replacement until the list
+/// runs out, then drawn again, so short word lists still fill the test.
+fn pick_words(language: &[&str], count: usize, stats: &Stats, strength: f64) -> Vec<String> {
+    let mut rng = thread_rng();
+    let mut contents: Vec<String> = Vec::with_capacity(count);
+    if language.is_empty() {
+        return contents;
+    }
+    while contents.len() < count {
+        let batch = (count - contents.len()).min(language.len());
+        let picked: Vec<&str> = if strength > 0.0 {
+            language
+                .choose_multiple_weighted(&mut rng, batch, |w| stats.word_weight(w, strength))
+                .expect("word weights are always positive and finite")
+                .copied()
+                .collect()
+        } else {
+            language.choose_multiple(&mut rng, batch).copied().collect()
+        };
+        contents.extend(picked.into_iter().map(ToOwned::to_owned));
+    }
+    contents.shuffle(&mut rng);
+    contents
+}
+
+/// Fold a finished test into the persistent stats and build its results view.
+fn finish_test(test: &Test, stats: &mut Stats, opt: &Opt) -> Results {
+    let mut results = Results::from(test);
+    stats.record(&test.letter_results);
+    if !opt.no_stats && !test.letter_results.is_empty() {
+        if let Err(e) = stats.save(&opt.stats_path()) {
+            if opt.debug {
+                eprintln!("Failed to save stats: {e}");
+            }
+        }
+    }
+    results.weak_letters = stats.weakest(5);
+    results
+}
+
+fn print_stats(stats: &Stats) {
+    if stats.letters.is_empty() {
+        println!("No typing history yet. Finish a test and come back.");
+        return;
+    }
+    println!("tests recorded: {}", stats.tests);
+    println!("{:<6} {:>9} {:>8} {:>8}", "letter", "attempts", "misses", "accuracy");
+    let mut rows: Vec<(&String, &stats::LetterStat)> = stats.letters.iter().collect();
+    rows.sort_by(|a, b| {
+        let aa = a.1.accuracy().unwrap_or(1.0);
+        let ba = b.1.accuracy().unwrap_or(1.0);
+        aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (letter, stat) in rows {
+        println!(
+            "{:<6} {:>9.1} {:>8.1} {:>7.1}%",
+            letter,
+            stat.attempts,
+            stat.misses,
+            stat.accuracy().unwrap_or(1.0) * 100.0
+        );
+    }
+    println!("(counts decay over time so recent tests weigh more)");
 }
 
 enum State {
@@ -243,10 +349,29 @@ fn main() -> io::Result<()> {
         dbg!(&config);
     }
 
-    if let Some(Command::Completions { shell }) = opt.command {
-        generate(shell, &mut Opt::command(), "ttyper", &mut io::stdout());
-        return Ok(());
+    match opt.command {
+        Some(Command::Completions { shell }) => {
+            generate(shell, &mut Opt::command(), "ttyper", &mut io::stdout());
+            return Ok(());
+        }
+        Some(Command::Stats { reset }) => {
+            if reset {
+                match fs::remove_file(opt.stats_path()) {
+                    Ok(()) => println!("Mistake history cleared."),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        println!("No mistake history to clear.")
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else {
+                print_stats(&Stats::load(&opt.stats_path()));
+            }
+            return Ok(());
+        }
+        None => {}
     }
+
+    let mut stats = opt.load_stats();
 
     if opt.list_languages {
         opt.languages()
@@ -259,7 +384,7 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let contents = opt
-        .gen_contents()
+        .gen_contents(&stats)
         .expect("Couldn't get test contents. Make sure the specified language actually exists.");
 
     if contents.is_empty() {
@@ -303,7 +428,7 @@ fn main() -> io::Result<()> {
                 ..
             }) => match state {
                 State::Test(ref test) => {
-                    state = State::Results(Results::from(test));
+                    state = State::Results(finish_test(test, &mut stats, &opt));
                 }
                 State::Results(_) => break,
             },
@@ -315,7 +440,7 @@ fn main() -> io::Result<()> {
                 if let Event::Key(key) = event {
                     test.handle_key(key);
                     if test.complete {
-                        state = State::Results(Results::from(&*test));
+                        state = State::Results(finish_test(test, &mut stats, &opt));
                     }
                 }
             }
@@ -326,7 +451,7 @@ fn main() -> io::Result<()> {
                     modifiers: KeyModifiers::NONE,
                     ..
                 }) => {
-                    let new_contents = opt.gen_contents().expect(
+                    let new_contents = opt.gen_contents(&stats).expect(
                         "Couldn't get test contents. Make sure the specified language actually exists.",
                     );
                     if new_contents.is_empty() {
@@ -402,6 +527,9 @@ mod tests {
             no_backtrack: false,
             sudden_death: false,
             no_backspace: false,
+            no_adaptive: false,
+            adaptive_strength: None,
+            no_stats: true,
             command: None,
         }
     }
@@ -412,7 +540,7 @@ mod tests {
         let path = dir.path().join("empty.txt");
         fs::File::create(&path).unwrap();
 
-        let contents = make_opt(path).gen_contents().unwrap();
+        let contents = make_opt(path).gen_contents(&Stats::default()).unwrap();
         assert!(contents.is_empty(), "empty file should produce empty vec");
     }
 
@@ -423,7 +551,35 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         writeln!(f, "hello world rust").unwrap();
 
-        let contents = make_opt(path).gen_contents().unwrap();
+        let contents = make_opt(path).gen_contents(&Stats::default()).unwrap();
         assert!(!contents.is_empty(), "non-empty file should produce words");
+    }
+
+    #[test]
+    fn pick_words_fills_requested_count() {
+        let lang = ["a", "b", "c"];
+        let words = pick_words(&lang, 10, &Stats::default(), 4.0);
+        assert_eq!(words.len(), 10);
+        let words = pick_words(&lang, 2, &Stats::default(), 0.0);
+        assert_eq!(words.len(), 2);
+    }
+
+    #[test]
+    fn pick_words_prefers_weak_letters() {
+        let mut stats = Stats::default();
+        // miss 'z' a lot, never miss anything else
+        let mut events: Vec<(char, bool)> = (0..40).map(|_| ('z', false)).collect();
+        events.extend("abcdefghijklmnopqrstuvwxy".chars().map(|c| (c, true)));
+        stats.record(&events);
+
+        let lang = ["zzz", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu", "vwx"];
+        let mut hits = 0;
+        for _ in 0..200 {
+            if pick_words(&lang, 1, &stats, 10.0)[0] == "zzz" {
+                hits += 1;
+            }
+        }
+        // uniform chance would be ~22 of 200
+        assert!(hits > 60, "zzz chosen only {hits} times out of 200");
     }
 }

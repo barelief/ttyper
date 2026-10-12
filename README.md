@@ -45,6 +45,30 @@ nix-env -iA nixpkgs.ttyper # or nixos.ttyper on NixOS
 scoop install ttyper
 ```
 
+## adaptive practice (fork feature)
+
+This fork remembers which letters you mistype and builds new tests around them.
+
+- Every keystroke is scored against the letter you were *supposed* to type. A typo
+  counts against that letter; letters after a typo are not penalised, so one slip
+  doesn't cascade.
+- History lives in `~/.config/ttyper/stats.toml` and decays slowly, so the drill
+  follows your current weaknesses rather than mistakes from months ago.
+- When a test is generated from a language word list, words containing your weak
+  letters are picked more often. Press `r` on the results screen to get a fresh,
+  re-weighted test. The results screen also shows your all-time weakest letters.
+
+```bash
+ttyper                          # adaptive by default
+ttyper --adaptive-strength 10   # lean much harder on weak letters
+ttyper --no-adaptive            # plain random words, still records mistakes
+ttyper --no-stats               # ignore and don't touch the history
+ttyper stats                    # per-letter accuracy table
+ttyper stats --reset            # start over
+```
+
+Config keys (in `config.toml`): `adaptive = true`, `adaptive_strength = 4.0`.
+
 ## usage
 
 For usage instructions, you can run `ttyper --help`:

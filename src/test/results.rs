@@ -59,6 +59,8 @@ pub struct Results {
     pub timing: TimingData,
     pub accuracy: AccuracyData,
     pub missed_words: Vec<String>,
+    /// All-time weakest letters (letter, accuracy 0..1), filled in from the stats file
+    pub weak_letters: Vec<(char, f64)>,
 }
 
 impl From<&Test> for Results {
@@ -70,6 +72,7 @@ impl From<&Test> for Results {
             timing: calc_timing(&events),
             accuracy: calc_accuracy(&events),
             missed_words: calc_missed_words(test),
+            weak_letters: Vec::new(),
         }
     }
 }

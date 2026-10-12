@@ -331,6 +331,15 @@ impl ThemedWidget for &results::Results {
         worst_keys.sort_unstable_by_key(|x| x.1);
 
         let mut worst_text = Text::styled("", theme.results_worst_keys);
+        if !self.weak_letters.is_empty() {
+            let all_time = self
+                .weak_letters
+                .iter()
+                .map(|(c, acc)| format!("{} {:.0}%", c, acc * 100.0))
+                .collect::<Vec<_>>()
+                .join("  ");
+            worst_text.extend([Line::from(format!("all-time: {}", all_time))]);
+        }
         worst_text.extend(
             worst_keys
                 .iter()
