@@ -81,8 +81,10 @@ fn word_cell_width(word: &TestWord) -> usize {
 
 /// Widest the text column gets, so long lines stay readable on wide terminals.
 const MAX_COLUMN_WIDTH: u16 = 80;
-/// Rows between prompt lines (2 = one blank row between lines).
+/// Rows between prompt lines when there is room (2 = one blank row between).
 const LINE_SPACING: u16 = 2;
+/// Prompt lines shown at once before the text starts scrolling.
+const MAX_VISIBLE_LINES: usize = 3;
 
 /// Greedy word wrap: indices of the words on each line.
 fn wrap_words(test: &Test, width: usize) -> Vec<Vec<usize>> {
@@ -108,6 +110,10 @@ pub struct TestLayout {
     pub column: Rect,
     /// Word indices per wrapped line
     pub lines: Vec<Vec<usize>>,
+    /// First wrapped line that is drawn (the prompt scrolls as you type)
+    pub first_line: usize,
+    /// Rows between drawn lines
+    pub spacing: u16,
     /// Single status row under the prompt
     pub status: Rect,
 }
@@ -119,9 +125,25 @@ impl TestLayout {
         let lines = wrap_words(test, width as usize);
 
         let input_height = if show_input { 3 } else { 0 };
-        let text_height = ((lines.len() as u16 - 1) * LINE_SPACING + 1)
-            .min(area.height.saturating_sub(input_height + 3))
-            .max(1);
+        let room = area.height.saturating_sub(input_height + 2).max(1);
+
+        // show a window of lines around the current word, scrolling as you type
+        let visible = lines.len().min(MAX_VISIBLE_LINES);
+        let current_line = lines
+            .iter()
+            .position(|l| l.contains(&test.current_word))
+            .unwrap_or(0);
+        let first_line = current_line
+            .saturating_sub(1)
+            .min(lines.len().saturating_sub(visible));
+
+        // double spacing, unless the terminal is too short for it
+        let spacing = if (visible as u16 - 1) * LINE_SPACING < room {
+            LINE_SPACING
+        } else {
+            1
+        };
+        let text_height = ((visible as u16 - 1) * spacing + 1).min(room);
         let total = input_height + text_height + 2;
         let top = area.y + area.height.saturating_sub(total) / 2;
 
@@ -129,8 +151,16 @@ impl TestLayout {
             input: Rect::new(x, top, width, input_height),
             column: Rect::new(x, top + input_height, width, text_height),
             lines,
+            first_line,
+            spacing,
             status: Rect::new(x, top + input_height + text_height + 1, width, 1),
         }
+    }
+
+    /// Screen row of a wrapped line, if it is inside the visible window.
+    fn line_y(&self, line: usize) -> Option<u16> {
+        let y = self.column.y + (line.checked_sub(self.first_line)? as u16) * self.spacing;
+        (y < self.column.bottom()).then_some(y)
     }
 
     /// Terminal cell of the caret: just before the next letter to type.
@@ -151,10 +181,7 @@ impl TestLayout {
             .chars()
             .count()
             .min(word.text.chars().count().max(word.progress.chars().count()));
-        let y = self.column.y + row as u16 * LINE_SPACING;
-        if y >= self.column.bottom() {
-            return None;
-        }
+        let y = self.line_y(row)?;
         Some((self.column.x + (before + offset) as u16, y))
     }
 }
@@ -197,10 +224,9 @@ impl ThemedWidget for TestView<'_> {
         // Prompt: plain text, one blank row between lines
         let words = words_to_spans(&test.words, test.current_word, theme);
         for (row, line) in layout.lines.iter().enumerate() {
-            let y = layout.column.y + row as u16 * LINE_SPACING;
-            if y >= layout.column.bottom() {
-                break;
-            }
+            let Some(y) = layout.line_y(row) else {
+                continue;
+            };
             let spans: Vec<Span> = line.iter().flat_map(|&i| words[i].clone()).collect();
             buf.set_line(layout.column.x, y, &Line::from(spans), layout.column.width);
         }

@@ -268,6 +268,24 @@ fn pick_words(language: &[&str], count: usize, stats: &Stats, strength: f64) -> 
     contents
 }
 
+/// Words for a "practice missed words" round: each distinct missed word up to
+/// 5 times, never more words than a normal test. Without the dedupe and cap,
+/// repeated practice rounds snowball (every missed copy spawned 5 more).
+fn practice_set(missed: &[String], max_words: usize) -> Vec<String> {
+    let mut distinct: Vec<&String> = Vec::new();
+    for w in missed {
+        if !distinct.contains(&w) {
+            distinct.push(w);
+        }
+    }
+    let repeats = (max_words / distinct.len().max(1)).clamp(1, 5);
+    distinct
+        .iter()
+        .flat_map(|w| std::iter::repeat_n((*w).clone(), repeats))
+        .take(max_words)
+        .collect()
+}
+
 /// Fold a finished test into the persistent stats and build its results view.
 fn finish_test(test: &Test, stats: &mut Stats, opt: &Opt) -> Results {
     let mut results = Results::from(test);
@@ -485,11 +503,7 @@ fn main() -> io::Result<()> {
                     if result.missed_words.is_empty() {
                         continue;
                     }
-                    // repeat each missed word 5 times
-                    let mut practice_words: Vec<String> = (result.missed_words)
-                        .iter()
-                        .flat_map(|w| vec![w.clone(); 5])
-                        .collect();
+                    let mut practice_words = practice_set(&result.missed_words, opt.words.get());
                     practice_words.shuffle(&mut thread_rng());
                     state = State::Test(Test::new(
                         practice_words,
@@ -566,6 +580,23 @@ mod tests {
 
         let contents = make_opt(path).gen_contents(&Stats::default()).unwrap();
         assert!(!contents.is_empty(), "non-empty file should produce words");
+    }
+
+    #[test]
+    fn practice_set_dedupes_and_caps() {
+        let missed: Vec<String> = ["cat", "cat", "cat", "dog"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let set = practice_set(&missed, 50);
+        assert_eq!(set.len(), 10);
+        assert_eq!(set.iter().filter(|w| *w == "cat").count(), 5);
+
+        let many: Vec<String> = (0..30).map(|i| format!("w{i}")).collect();
+        let set = practice_set(&many, 50);
+        assert_eq!(set.len(), 30);
+        let set = practice_set(&many, 20);
+        assert_eq!(set.len(), 20);
     }
 
     #[test]
