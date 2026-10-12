@@ -74,33 +74,70 @@ impl Theme {
     }
 }
 
-impl ThemedWidget for &Test {
+/// Display width of a word in the prompt, including its trailing space.
+fn word_cell_width(word: &TestWord) -> usize {
+    word.text.chars().count().max(word.progress.chars().count()) + 1
+}
+
+/// Number of lines the prompt needs when wrapped to `width` cells.
+fn prompt_line_count(test: &Test, width: usize) -> usize {
+    let mut lines = 1;
+    let mut current = 0;
+    for word in &test.words {
+        let w = word_cell_width(word);
+        if current + w > width && current > 0 {
+            lines += 1;
+            current = 0;
+        }
+        current += w;
+    }
+    lines
+}
+
+/// Areas for the typing screen: [input box, prompt, status bar], centred
+/// vertically. The input box has zero height unless `show_input` is set.
+pub fn test_layout(test: &Test, area: Rect, show_input: bool) -> [Rect; 3] {
+    let prompt_width = area.width.saturating_sub(2).max(1) as usize;
+    let input_height = if show_input { 3 } else { 0 };
+    let prompt_height = (prompt_line_count(test, prompt_width) as u16 + 2)
+        .min(area.height.saturating_sub(3 + input_height))
+        .max(3);
+    let total = input_height + prompt_height + 3;
+    let top = area.height.saturating_sub(total) / 2;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top),
+            Constraint::Length(input_height),
+            Constraint::Length(prompt_height),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    [chunks[1], chunks[2], chunks[3]]
+}
+
+/// Where the classic input box sits (for terminal cursor placement).
+pub fn input_area(test: &Test, area: Rect) -> Rect {
+    test_layout(test, area, true)[0]
+}
+
+/// The typing screen: the prompt text plus an optional classic input box.
+pub struct TestView<'a> {
+    pub test: &'a Test,
+    pub show_input: bool,
+}
+
+impl ThemedWidget for TestView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let TestView { test, show_input } = self;
         buf.set_style(area, theme.default);
 
-        // Chunks
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(6)])
-            .split(area);
-
-        // Sections
-        let input = SizedBlock {
-            block: Block::default()
-                .title(Line::from(vec![Span::styled("Input", theme.title)]))
-                .borders(Borders::ALL)
-                .border_type(theme.border_type)
-                .border_style(theme.input_border),
-            area: chunks[0],
-        };
-        input.draw_inner(
-            &Line::from(self.words[self.current_word].progress.clone()),
-            buf,
-        );
-        input.render(buf);
+        let chunks = test_layout(test, area, show_input);
+        let prompt_width = area.width.saturating_sub(2).max(1) as usize;
 
         let target_lines: Vec<Line> = {
-            let words = words_to_spans(&self.words, self.current_word, theme);
+            let words = words_to_spans(&test.words, test.current_word, theme);
 
             let mut lines: Vec<Line> = Vec::new();
             let mut current_line: Vec<Span> = Vec::new();
@@ -108,10 +145,8 @@ impl ThemedWidget for &Test {
             for word in words {
                 let word_width: usize = word.iter().map(|s| s.width()).sum();
 
-                if current_width + word_width > chunks[1].width as usize - 2 {
-                    current_line.push(Span::raw("\n"));
-                    lines.push(Line::from(current_line.clone()));
-                    current_line.clear();
+                if current_width + word_width > prompt_width && !current_line.is_empty() {
+                    lines.push(Line::from(std::mem::take(&mut current_line)));
                     current_width = 0;
                 }
 
@@ -122,14 +157,89 @@ impl ThemedWidget for &Test {
 
             lines
         };
+
+        // Input (classic layout only)
+        if show_input {
+            let input = SizedBlock {
+                block: Block::default()
+                    .title(Line::from(vec![Span::styled("Input", theme.title)]))
+                    .borders(Borders::ALL)
+                    .border_type(theme.border_type)
+                    .border_style(theme.input_border),
+                area: chunks[0],
+            };
+            input.draw_inner(
+                &Line::from(test.words[test.current_word].progress.clone()),
+                buf,
+            );
+            input.render(buf);
+        }
+
+        // Prompt
+        let mut title = vec![Span::styled("Prompt", theme.title)];
+        if !test.focus_letters.is_empty() {
+            let letters: String = test
+            .focus_letters
+                .iter()
+                .map(char::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            title.push(Span::styled(
+                format!(" drilling: {letters} "),
+                theme.status_streak,
+            ));
+        }
         let target = Paragraph::new(target_lines).block(
             Block::default()
-                .title(Span::styled("Prompt", theme.title))
+                .title(Line::from(title))
                 .borders(Borders::ALL)
                 .border_type(theme.border_type)
                 .border_style(theme.prompt_border),
         );
         target.render(chunks[1], buf);
+
+        // Status bar: wpm | acc | streak | progress bar
+        let status_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(theme.border_type)
+            .border_style(theme.status_border);
+        let inner = status_block.inner(chunks[2]);
+        status_block.render(chunks[2], buf);
+
+        let wpm = test
+            .live_wpm()
+            .map(|w| format!("{w:>3.0}"))
+            .unwrap_or_else(|| "  -".into());
+        let acc = test
+            .live_accuracy()
+            .map(|a| format!("{a:>3.0}%"))
+            .unwrap_or_else(|| "   -".into());
+        let streak = test.streak();
+        let streak_style = if streak >= 20 {
+            theme.status_streak
+        } else {
+            theme.status_value
+        };
+        let mut spans = vec![
+            Span::styled(" wpm ", theme.status_label),
+            Span::styled(wpm, theme.status_value),
+            Span::styled("  acc ", theme.status_label),
+            Span::styled(acc, theme.status_value),
+            Span::styled("  streak ", theme.status_label),
+            Span::styled(format!("{streak:>3}"), streak_style),
+            Span::styled(
+                format!("  {}/{} ", test.current_word, test.words.len()),
+                theme.status_label,
+            ),
+        ];
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        let bar_width = (inner.width as usize).saturating_sub(used + 1);
+        if bar_width >= 4 {
+            let done = bar_width * test.current_word / test.words.len();
+            spans.push(Span::styled("━".repeat(done), theme.progress_done));
+            spans.push(Span::styled("━".repeat(bar_width - done), theme.progress_todo));
+        }
+        buf.set_line(inner.x, inner.y, &Line::from(spans), inner.width);
     }
 }
 
@@ -312,6 +422,7 @@ impl ThemedWidget for &results::Results {
                 self.timing.overall_cps * WPM_PER_CPS
             )),
             Line::from(format!("Correct Keypresses: {}", self.accuracy.overall)),
+            Line::from(format!("Best Streak: {} letters", self.best_streak)),
         ]);
         let overview = Paragraph::new(overview_text).block(
             Block::default()

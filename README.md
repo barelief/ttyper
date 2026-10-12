@@ -69,6 +69,19 @@ ttyper stats --reset            # start over
 
 Config keys (in `config.toml`): `adaptive = true`, `adaptive_strength = 4.0`.
 
+### typing screen
+
+The fork also reworks the typing screen: you type directly over the prompt
+(no separate input box), typed letters light up white, mistakes turn red and
+underlined, the next letter has a block cursor, and a live bar under the prompt
+shows WPM, accuracy, current streak and progress. The prompt title lists the
+letters the current test is drilling.
+
+Set `show_input = true` in `config.toml` to bring back the classic input box.
+The colours are theme keys: `prompt_correct`, `prompt_incorrect`,
+`prompt_untyped`, `prompt_cursor`, `status_label`, `status_value`,
+`status_streak`, `progress_done`, `progress_todo`.
+
 ## usage
 
 For usage instructions, you can run `ttyper --help`:

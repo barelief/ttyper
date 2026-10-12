@@ -61,6 +61,8 @@ pub struct Results {
     pub missed_words: Vec<String>,
     /// All-time weakest letters (letter, accuracy 0..1), filled in from the stats file
     pub weak_letters: Vec<(char, f64)>,
+    /// Longest run of correctly typed letters
+    pub best_streak: usize,
 }
 
 impl From<&Test> for Results {
@@ -73,6 +75,7 @@ impl From<&Test> for Results {
             accuracy: calc_accuracy(&events),
             missed_words: calc_missed_words(test),
             weak_letters: Vec::new(),
+            best_streak: test.best_streak(),
         }
     }
 }

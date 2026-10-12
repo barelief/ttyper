@@ -57,7 +57,7 @@ impl Stats {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let body = toml::to_string(self).map_err(|e| io::Error::other(e))?;
+        let body = toml::to_string(self).map_err(io::Error::other)?;
         fs::write(path, body)
     }
 

@@ -56,6 +56,8 @@ pub struct Test {
     pub backspace_enabled: bool,
     /// (expected letter, typed correctly) for every first attempt at a letter
     pub letter_results: Vec<(char, bool)>,
+    /// Letters this test was weighted toward (for display only)
+    pub focus_letters: Vec<char>,
 }
 
 impl Test {
@@ -73,7 +75,69 @@ impl Test {
             sudden_death_enabled,
             backspace_enabled,
             letter_results: Vec::new(),
+            focus_letters: Vec::new(),
         }
+    }
+
+    /// Seconds since the first keystroke, if any
+    pub fn elapsed_secs(&self) -> Option<f64> {
+        self.words
+            .iter()
+            .flat_map(|w| w.events.first())
+            .map(|e| e.time)
+            .min()
+            .map(|t| t.elapsed().as_secs_f64())
+    }
+
+    /// Characters typed so far (completed words count their space)
+    pub fn typed_chars(&self) -> usize {
+        self.words[..=self.current_word]
+            .iter()
+            .map(|w| w.progress.chars().count())
+            .sum::<usize>()
+            + self.current_word
+    }
+
+    /// Live words-per-minute (standard 5-char words)
+    pub fn live_wpm(&self) -> Option<f64> {
+        let secs = self.elapsed_secs()?;
+        if secs < 0.5 {
+            return None;
+        }
+        Some(self.typed_chars() as f64 / 5.0 / (secs / 60.0))
+    }
+
+    /// Live letter accuracy as a percentage
+    pub fn live_accuracy(&self) -> Option<f64> {
+        if self.letter_results.is_empty() {
+            return None;
+        }
+        let ok = self.letter_results.iter().filter(|(_, c)| *c).count();
+        Some(ok as f64 * 100.0 / self.letter_results.len() as f64)
+    }
+
+    /// Correct letters in a row since the last mistake
+    pub fn streak(&self) -> usize {
+        self.letter_results
+            .iter()
+            .rev()
+            .take_while(|(_, c)| *c)
+            .count()
+    }
+
+    /// Longest run of correct letters in this test
+    pub fn best_streak(&self) -> usize {
+        let mut best = 0;
+        let mut cur = 0;
+        for (_, c) in &self.letter_results {
+            if *c {
+                cur += 1;
+                best = best.max(cur);
+            } else {
+                cur = 0;
+            }
+        }
+        best
     }
 
     /// Record how the user did on the letter they were expected to type next.

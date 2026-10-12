@@ -6,6 +6,7 @@ mod ui;
 use config::Config;
 use stats::Stats;
 use test::{results::Results, Test};
+use ui::TestView;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
@@ -15,11 +16,7 @@ use crossterm::{
     execute, terminal,
 };
 use rand::{seq::SliceRandom, thread_rng};
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    terminal::Terminal,
-};
+use ratatui::{backend::CrosstermBackend, terminal::Terminal};
 use rust_embed::RustEmbed;
 use std::{
     ffi::OsString,
@@ -172,6 +169,20 @@ impl Opt {
         }
     }
 
+    /// Build a test, annotating it with the letters it is weighted toward
+    fn new_test(&self, contents: Vec<String>, stats: &Stats) -> Test {
+        let mut test = Test::new(
+            contents,
+            !self.no_backtrack,
+            self.sudden_death,
+            !self.no_backspace,
+        );
+        if self.contents.is_none() && self.adaptive_strength() > 0.0 {
+            test.focus_letters = stats.weakest(5).into_iter().map(|(c, _)| c).collect();
+        }
+        test
+    }
+
     /// Where per-letter mistake history is stored
     fn stats_path(&self) -> PathBuf {
         self.config_dir().join("stats.toml")
@@ -312,19 +323,25 @@ impl State {
             State::Test(test) => {
                 terminal.draw(|f| {
                     let area = f.size();
-                    f.render_widget(config.theme.apply_to(test), area);
+                    f.render_widget(
+                        config.theme.apply_to(TestView {
+                            test,
+                            show_input: config.show_input,
+                        }),
+                        area,
+                    );
+                    if !config.show_input {
+                        return;
+                    }
 
                     // Position cursor at end of input for IME composition support
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Length(6)])
-                        .split(area);
-                    let inner_x = chunks[0].x + 1;
-                    let inner_y = chunks[0].y + 1;
+                    let input_area = ui::input_area(test, area);
+                    let inner_x = input_area.x + 1;
+                    let inner_y = input_area.y + 1;
                     let progress_width =
                         ratatui::text::Line::from(test.words[test.current_word].progress.as_str())
                             .width() as u16;
-                    let max_cursor_x = chunks[0].right().saturating_sub(2);
+                    let max_cursor_x = input_area.right().saturating_sub(2);
                     f.set_cursor((inner_x + progress_width).min(max_cursor_x), inner_y);
                 })?;
             }
@@ -402,12 +419,7 @@ fn main() -> io::Result<()> {
     )?;
     terminal.clear()?;
 
-    let mut state = State::Test(Test::new(
-        contents,
-        !opt.no_backtrack,
-        opt.sudden_death,
-        !opt.no_backspace,
-    ));
+    let mut state = State::Test(opt.new_test(contents, &stats));
 
     state.render_into(&mut terminal, &config)?;
     loop {
@@ -457,12 +469,7 @@ fn main() -> io::Result<()> {
                     if new_contents.is_empty() {
                         continue;
                     }
-                    state = State::Test(Test::new(
-                        new_contents,
-                        !opt.no_backtrack,
-                        opt.sudden_death,
-                        !opt.no_backspace,
-                    ));
+                    state = State::Test(opt.new_test(new_contents, &stats));
                 }
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('p'),

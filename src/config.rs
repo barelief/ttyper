@@ -15,6 +15,9 @@ pub struct Config {
     pub adaptive: bool,
     /// How strongly to bias (0 = off, 1 = mild, 4 = default, 10+ = very aggressive)
     pub adaptive_strength: f64,
+    /// Show the separate "Input" box above the prompt (classic layout).
+    /// Off by default: you type straight over the prompt text.
+    pub show_input: bool,
     pub theme: Theme,
 }
 
@@ -24,6 +27,7 @@ impl Default for Config {
             default_language: "english200".into(),
             adaptive: true,
             adaptive_strength: 4.0,
+            show_input: false,
             theme: Theme::default(),
         }
     }
@@ -63,6 +67,20 @@ pub struct Theme {
     #[serde(deserialize_with = "deserialize_style")]
     pub prompt_cursor: Style,
 
+    // live status bar under the prompt
+    #[serde(deserialize_with = "deserialize_style")]
+    pub status_border: Style,
+    #[serde(deserialize_with = "deserialize_style")]
+    pub status_label: Style,
+    #[serde(deserialize_with = "deserialize_style")]
+    pub status_value: Style,
+    #[serde(deserialize_with = "deserialize_style")]
+    pub status_streak: Style,
+    #[serde(deserialize_with = "deserialize_style")]
+    pub progress_done: Style,
+    #[serde(deserialize_with = "deserialize_style")]
+    pub progress_todo: Style,
+
     // results widget
     #[serde(deserialize_with = "deserialize_style")]
     pub results_overview: Style,
@@ -99,19 +117,38 @@ impl Default for Theme {
 
             border_type: BorderType::Rounded,
 
-            prompt_correct: Style::default().fg(Color::Green),
-            prompt_incorrect: Style::default().fg(Color::Red),
-            prompt_untyped: Style::default().fg(Color::Gray),
+            // typed text "lights up" white, mistakes glow red, untyped stays dim
+            prompt_correct: Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            prompt_incorrect: Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            prompt_untyped: Style::default().fg(Color::DarkGray),
 
             prompt_current_correct: Style::default()
-                .fg(Color::Green)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-            prompt_current_incorrect: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            prompt_current_untyped: Style::default()
-                .fg(Color::Blue)
+            prompt_current_incorrect: Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            prompt_current_untyped: Style::default().fg(Color::Gray),
+
+            prompt_cursor: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
 
-            prompt_cursor: Style::default().add_modifier(Modifier::UNDERLINED),
+            status_border: Style::default().fg(Color::DarkGray),
+            status_label: Style::default().fg(Color::DarkGray),
+            status_value: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            status_streak: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            progress_done: Style::default().fg(Color::Green),
+            progress_todo: Style::default().fg(Color::DarkGray),
 
             results_overview: Style::default()
                 .fg(Color::Cyan)
