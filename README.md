@@ -13,6 +13,9 @@ See [adaptive practice](#adaptive-practice-fork-feature) below.
 
 ttyper is a terminal-based typing test built with Rust and Ratatui.
 
+<img width="1855" height="528" alt="image" src="https://github.com/user-attachments/assets/67f3e67b-b740-4481-ba7e-5d1a71545d54" />
+
+
 ![Recording](./resources/recording.gif)
 
 ## chat
