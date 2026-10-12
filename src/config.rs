@@ -123,7 +123,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             prompt_incorrect: Style::default()
                 .fg(Color::Red)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
             prompt_untyped: Style::default().fg(Color::DarkGray),
 
             prompt_current_correct: Style::default()
@@ -131,13 +131,12 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             prompt_current_incorrect: Style::default()
                 .fg(Color::Red)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            prompt_current_untyped: Style::default().fg(Color::Gray),
-
-            prompt_cursor: Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+            prompt_current_untyped: Style::default().fg(Color::DarkGray),
+
+            // the caret is the terminal's own bar cursor; this styles the
+            // letter under it (set e.g. "black:yellow" for a block cursor)
+            prompt_cursor: Style::default(),
 
             status_border: Style::default().fg(Color::DarkGray),
             status_label: Style::default().fg(Color::DarkGray),

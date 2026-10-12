@@ -79,47 +79,89 @@ fn word_cell_width(word: &TestWord) -> usize {
     word.text.chars().count().max(word.progress.chars().count()) + 1
 }
 
-/// Number of lines the prompt needs when wrapped to `width` cells.
-fn prompt_line_count(test: &Test, width: usize) -> usize {
-    let mut lines = 1;
+/// Widest the text column gets, so long lines stay readable on wide terminals.
+const MAX_COLUMN_WIDTH: u16 = 80;
+/// Rows between prompt lines (2 = one blank row between lines).
+const LINE_SPACING: u16 = 2;
+
+/// Greedy word wrap: indices of the words on each line.
+fn wrap_words(test: &Test, width: usize) -> Vec<Vec<usize>> {
+    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
     let mut current = 0;
-    for word in &test.words {
+    for (i, word) in test.words.iter().enumerate() {
         let w = word_cell_width(word);
-        if current + w > width && current > 0 {
-            lines += 1;
+        if current + w > width && !lines.last().unwrap().is_empty() {
+            lines.push(Vec::new());
             current = 0;
         }
+        lines.last_mut().unwrap().push(i);
         current += w;
     }
     lines
 }
 
-/// Areas for the typing screen: [input box, prompt, status bar], centred
-/// vertically. The input box has zero height unless `show_input` is set.
-pub fn test_layout(test: &Test, area: Rect, show_input: bool) -> [Rect; 3] {
-    let prompt_width = area.width.saturating_sub(2).max(1) as usize;
-    let input_height = if show_input { 3 } else { 0 };
-    let prompt_height = (prompt_line_count(test, prompt_width) as u16 + 2)
-        .min(area.height.saturating_sub(3 + input_height))
-        .max(3);
-    let total = input_height + prompt_height + 3;
-    let top = area.height.saturating_sub(total) / 2;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(top),
-            Constraint::Length(input_height),
-            Constraint::Length(prompt_height),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(area);
-    [chunks[1], chunks[2], chunks[3]]
+/// Where everything goes on the typing screen.
+pub struct TestLayout {
+    /// Classic input box (zero height unless enabled)
+    pub input: Rect,
+    /// Text column; prompt lines start at its top, `LINE_SPACING` rows apart
+    pub column: Rect,
+    /// Word indices per wrapped line
+    pub lines: Vec<Vec<usize>>,
+    /// Single status row under the prompt
+    pub status: Rect,
+}
+
+impl TestLayout {
+    pub fn new(test: &Test, area: Rect, show_input: bool) -> Self {
+        let width = area.width.saturating_sub(4).clamp(1, MAX_COLUMN_WIDTH);
+        let x = area.x + (area.width - width) / 2;
+        let lines = wrap_words(test, width as usize);
+
+        let input_height = if show_input { 3 } else { 0 };
+        let text_height = ((lines.len() as u16 - 1) * LINE_SPACING + 1)
+            .min(area.height.saturating_sub(input_height + 3))
+            .max(1);
+        let total = input_height + text_height + 2;
+        let top = area.y + area.height.saturating_sub(total) / 2;
+
+        Self {
+            input: Rect::new(x, top, width, input_height),
+            column: Rect::new(x, top + input_height, width, text_height),
+            lines,
+            status: Rect::new(x, top + input_height + text_height + 1, width, 1),
+        }
+    }
+
+    /// Terminal cell of the caret: just before the next letter to type.
+    pub fn caret(&self, test: &Test) -> Option<(u16, u16)> {
+        let (row, line) = self
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(&test.current_word))?;
+        let before: usize = line
+            .iter()
+            .take_while(|&&i| i != test.current_word)
+            .map(|&i| word_cell_width(&test.words[i]))
+            .sum();
+        let word = &test.words[test.current_word];
+        let offset = word
+            .progress
+            .chars()
+            .count()
+            .min(word.text.chars().count().max(word.progress.chars().count()));
+        let y = self.column.y + row as u16 * LINE_SPACING;
+        if y >= self.column.bottom() {
+            return None;
+        }
+        Some((self.column.x + (before + offset) as u16, y))
+    }
 }
 
 /// Where the classic input box sits (for terminal cursor placement).
 pub fn input_area(test: &Test, area: Rect) -> Rect {
-    test_layout(test, area, true)[0]
+    TestLayout::new(test, area, true).input
 }
 
 /// The typing screen: the prompt text plus an optional classic input box.
@@ -133,30 +175,7 @@ impl ThemedWidget for TestView<'_> {
         let TestView { test, show_input } = self;
         buf.set_style(area, theme.default);
 
-        let chunks = test_layout(test, area, show_input);
-        let prompt_width = area.width.saturating_sub(2).max(1) as usize;
-
-        let target_lines: Vec<Line> = {
-            let words = words_to_spans(&test.words, test.current_word, theme);
-
-            let mut lines: Vec<Line> = Vec::new();
-            let mut current_line: Vec<Span> = Vec::new();
-            let mut current_width = 0;
-            for word in words {
-                let word_width: usize = word.iter().map(|s| s.width()).sum();
-
-                if current_width + word_width > prompt_width && !current_line.is_empty() {
-                    lines.push(Line::from(std::mem::take(&mut current_line)));
-                    current_width = 0;
-                }
-
-                current_line.extend(word);
-                current_width += word_width;
-            }
-            lines.push(Line::from(current_line));
-
-            lines
-        };
+        let layout = TestLayout::new(test, area, show_input);
 
         // Input (classic layout only)
         if show_input {
@@ -166,7 +185,7 @@ impl ThemedWidget for TestView<'_> {
                     .borders(Borders::ALL)
                     .border_type(theme.border_type)
                     .border_style(theme.input_border),
-                area: chunks[0],
+                area: layout.input,
             };
             input.draw_inner(
                 &Line::from(test.words[test.current_word].progress.clone()),
@@ -175,37 +194,18 @@ impl ThemedWidget for TestView<'_> {
             input.render(buf);
         }
 
-        // Prompt
-        let mut title = vec![Span::styled("Prompt", theme.title)];
-        if !test.focus_letters.is_empty() {
-            let letters: String = test
-            .focus_letters
-                .iter()
-                .map(char::to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            title.push(Span::styled(
-                format!(" drilling: {letters} "),
-                theme.status_streak,
-            ));
+        // Prompt: plain text, one blank row between lines
+        let words = words_to_spans(&test.words, test.current_word, theme);
+        for (row, line) in layout.lines.iter().enumerate() {
+            let y = layout.column.y + row as u16 * LINE_SPACING;
+            if y >= layout.column.bottom() {
+                break;
+            }
+            let spans: Vec<Span> = line.iter().flat_map(|&i| words[i].clone()).collect();
+            buf.set_line(layout.column.x, y, &Line::from(spans), layout.column.width);
         }
-        let target = Paragraph::new(target_lines).block(
-            Block::default()
-                .title(Line::from(title))
-                .borders(Borders::ALL)
-                .border_type(theme.border_type)
-                .border_style(theme.prompt_border),
-        );
-        target.render(chunks[1], buf);
 
-        // Status bar: wpm | acc | streak | progress bar
-        let status_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(theme.border_type)
-            .border_style(theme.status_border);
-        let inner = status_block.inner(chunks[2]);
-        status_block.render(chunks[2], buf);
-
+        // Status row: wpm | acc | streak | progress | drilling
         let wpm = test
             .live_wpm()
             .map(|w| format!("{w:>3.0}"))
@@ -213,7 +213,7 @@ impl ThemedWidget for TestView<'_> {
         let acc = test
             .live_accuracy()
             .map(|a| format!("{a:>3.0}%"))
-            .unwrap_or_else(|| "   -".into());
+            .unwrap_or_else(|| "  - ".into());
         let streak = test.streak();
         let streak_style = if streak >= 20 {
             theme.status_streak
@@ -221,25 +221,41 @@ impl ThemedWidget for TestView<'_> {
             theme.status_value
         };
         let mut spans = vec![
-            Span::styled(" wpm ", theme.status_label),
+            Span::styled("wpm ", theme.status_label),
             Span::styled(wpm, theme.status_value),
-            Span::styled("  acc ", theme.status_label),
+            Span::styled("   acc ", theme.status_label),
             Span::styled(acc, theme.status_value),
-            Span::styled("  streak ", theme.status_label),
-            Span::styled(format!("{streak:>3}"), streak_style),
+            Span::styled("   streak ", theme.status_label),
+            Span::styled(format!("{streak:<3}"), streak_style),
             Span::styled(
-                format!("  {}/{} ", test.current_word, test.words.len()),
+                format!("   {}/{}", test.current_word, test.words.len()),
                 theme.status_label,
             ),
         ];
+        if !test.focus_letters.is_empty() {
+            let letters: String = test
+                .focus_letters
+                .iter()
+                .map(char::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            spans.push(Span::styled("   drilling ", theme.status_label));
+            spans.push(Span::styled(letters, theme.status_streak));
+        }
         let used: usize = spans.iter().map(|s| s.width()).sum();
-        let bar_width = (inner.width as usize).saturating_sub(used + 1);
-        if bar_width >= 4 {
+        let bar_width = (layout.status.width as usize).saturating_sub(used + 3);
+        if bar_width >= 8 {
             let done = bar_width * test.current_word / test.words.len();
+            spans.push(Span::raw("   "));
             spans.push(Span::styled("━".repeat(done), theme.progress_done));
             spans.push(Span::styled("━".repeat(bar_width - done), theme.progress_todo));
         }
-        buf.set_line(inner.x, inner.y, &Line::from(spans), inner.width);
+        buf.set_line(
+            layout.status.x,
+            layout.status.y,
+            &Line::from(spans),
+            layout.status.width,
+        );
     }
 }
 

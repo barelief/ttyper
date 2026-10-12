@@ -330,19 +330,23 @@ impl State {
                         }),
                         area,
                     );
-                    if !config.show_input {
-                        return;
+                    if config.show_input {
+                        // Position cursor at end of input for IME composition support
+                        let input_area = ui::input_area(test, area);
+                        let inner_x = input_area.x + 1;
+                        let inner_y = input_area.y + 1;
+                        let progress_width = ratatui::text::Line::from(
+                            test.words[test.current_word].progress.as_str(),
+                        )
+                        .width() as u16;
+                        let max_cursor_x = input_area.right().saturating_sub(2);
+                        f.set_cursor((inner_x + progress_width).min(max_cursor_x), inner_y);
+                    } else if let Some((x, y)) =
+                        ui::TestLayout::new(test, area, false).caret(test)
+                    {
+                        // thin bar caret sits just before the next letter
+                        f.set_cursor(x, y);
                     }
-
-                    // Position cursor at end of input for IME composition support
-                    let input_area = ui::input_area(test, area);
-                    let inner_x = input_area.x + 1;
-                    let inner_y = input_area.y + 1;
-                    let progress_width =
-                        ratatui::text::Line::from(test.words[test.current_word].progress.as_str())
-                            .width() as u16;
-                    let max_cursor_x = input_area.right().saturating_sub(2);
-                    f.set_cursor((inner_x + progress_width).min(max_cursor_x), inner_y);
                 })?;
             }
             State::Results(results) => {
@@ -415,6 +419,7 @@ fn main() -> io::Result<()> {
         io::stdout(),
         cursor::Hide,
         cursor::SavePosition,
+        cursor::SetCursorStyle::SteadyBar,
         terminal::EnterAlternateScreen,
     )?;
     terminal.clear()?;
@@ -510,6 +515,7 @@ fn main() -> io::Result<()> {
     execute!(
         io::stdout(),
         cursor::RestorePosition,
+        cursor::SetCursorStyle::DefaultUserShape,
         cursor::Show,
         terminal::LeaveAlternateScreen,
     )?;

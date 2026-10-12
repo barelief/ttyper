@@ -1,4 +1,8 @@
-# ttyper
+# ttyper (adaptive fork)
+
+This is a fork of [max-niederman/ttyper](https://github.com/max-niederman/ttyper)
+that tracks which letters you mistype and builds new tests around them.
+See [adaptive practice](#adaptive-practice-fork-feature) below.
 
 [![Crates.io](https://img.shields.io/crates/v/ttyper)](https://crates.io/crates/ttyper)
 [![GitHub Stars](https://img.shields.io/github/stars/max-niederman/ttyper)](https://github.com/max-niederman/ttyper)
@@ -71,11 +75,11 @@ Config keys (in `config.toml`): `adaptive = true`, `adaptive_strength = 4.0`.
 
 ### typing screen
 
-The fork also reworks the typing screen: you type directly over the prompt
-(no separate input box), typed letters light up white, mistakes turn red and
-underlined, the next letter has a block cursor, and a live bar under the prompt
-shows WPM, accuracy, current streak and progress. The prompt title lists the
-letters the current test is drilling.
+The fork also reworks the typing screen in a monkeytype style: no boxes, you
+type directly over the prompt, typed letters light up white, mistakes turn red,
+untyped text stays dim, lines are double spaced, and a thin bar caret marks the
+next letter. A status row under the text shows live WPM, accuracy, current
+streak, progress and the letters this test is drilling.
 
 Set `show_input = true` in `config.toml` to bring back the classic input box.
 The colours are theme keys: `prompt_correct`, `prompt_incorrect`,
